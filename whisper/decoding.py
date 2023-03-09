@@ -117,6 +117,7 @@ class DecodingResult:
     audio_features: Tensor
     language: str
     language_probs: Optional[Dict[str, float]] = None
+    logits: List[torch.tensor] = None
     tokens: List[int] = field(default_factory=list)
     text: str = ""
     avg_logprob: float = np.nan
@@ -667,7 +668,7 @@ class DecodingTask:
         n_batch = tokens.shape[0]
         sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_features.device)
         no_speech_probs = [np.nan] * n_batch
-
+        logits_list = []
         try:
             for i in range(self.sample_len):
                 logits = self.inference.logits(tokens, audio_features)
@@ -680,7 +681,7 @@ class DecodingTask:
 
                 # now we need to consider the logits at the last token only
                 logits = logits[:, -1]
-
+                logits_list.append(logits)
                 # apply the logit filters, e.g. for suppressing or applying penalty to
                 for logit_filter in self.logit_filters:
                     logit_filter.apply(logits, tokens)
@@ -693,7 +694,7 @@ class DecodingTask:
         finally:
             self.inference.cleanup_caching()
 
-        return tokens, sum_logprobs, no_speech_probs
+        return tokens, sum_logprobs, no_speech_probs, logits_list
 
     @torch.no_grad()
     def run(self, mel: Tensor) -> List[DecodingResult]:
@@ -721,8 +722,9 @@ class DecodingTask:
         tokens = tokens.repeat_interleave(self.n_group, dim=0).to(audio_features.device)
 
         # call the main sampling loop
-        tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
+        tokens, sum_logprobs, no_speech_probs, logits_list = self._main_loop(audio_features, tokens)
 
+        logits = torch.stack(logits_list, dim=1) 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
         audio_features = audio_features[:: self.n_group]
         no_speech_probs = no_speech_probs[:: self.n_group]
@@ -733,6 +735,7 @@ class DecodingTask:
 
         # get the final candidates for each group, and slice between the first sampled token and EOT
         tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
+
         tokens: List[List[Tensor]] = [
             [t[self.sample_begin : (t == tokenizer.eot).nonzero()[0, 0]] for t in s]
             for s in tokens
@@ -740,6 +743,7 @@ class DecodingTask:
 
         # select the top-ranked sample in each group
         selected = self.sequence_ranker.rank(tokens, sum_logprobs)
+
         tokens: List[List[int]] = [t[i].tolist() for i, t in zip(selected, tokens)]
         texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
 
@@ -752,6 +756,7 @@ class DecodingTask:
             texts,
             languages,
             tokens,
+            logits,
             audio_features,
             avg_logprobs,
             no_speech_probs,
@@ -764,13 +769,14 @@ class DecodingTask:
                 audio_features=features,
                 language=language,
                 tokens=tokens,
+                logits=logits,
                 text=text,
                 avg_logprob=avg_logprob,
                 no_speech_prob=no_speech_prob,
                 temperature=self.options.temperature,
                 compression_ratio=compression_ratio(text),
             )
-            for text, language, tokens, features, avg_logprob, no_speech_prob in zip(
+            for text, language, tokens, logits, features, avg_logprob, no_speech_prob in zip(
                 *fields
             )
         ]
