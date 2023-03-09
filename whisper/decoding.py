@@ -549,7 +549,8 @@ class DecodingTask:
                 max_initial_timestamp_index = round(
                     self.options.max_initial_timestamp / precision
                 )
-            self.logit_filters.append(
+            self.
+            _filters.append(
                 ApplyTimestampRules(
                     tokenizer, self.sample_begin, max_initial_timestamp_index
                 )
@@ -681,7 +682,9 @@ class DecodingTask:
 
                 # now we need to consider the logits at the last token only
                 logits = logits[:, -1]
+                
                 logits_list.append(logits)
+                
                 # apply the logit filters, e.g. for suppressing or applying penalty to
                 for logit_filter in self.logit_filters:
                     logit_filter.apply(logits, tokens)
@@ -723,8 +726,10 @@ class DecodingTask:
 
         # call the main sampling loop
         tokens, sum_logprobs, no_speech_probs, logits_list = self._main_loop(audio_features, tokens)
-
+        
+        # stack the logits into a tensor
         logits = torch.stack(logits_list, dim=1) 
+        
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
         audio_features = audio_features[:: self.n_group]
         no_speech_probs = no_speech_probs[:: self.n_group]
